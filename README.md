@@ -1,6 +1,6 @@
 # 爱，不必一直悬着 · V2
 
-另有新作品：[Hello Kitty 桌面宠物 V2：分层动作、鼠标互动与 Windows 下载](desktop-pet/README.md)。
+另有新作品：[Hello Kitty 桌面宠物 V2.1：全屏自动隐藏、分层动作与 Windows 下载](desktop-pet/README.md)。
 
 **纯背景音乐＋中文字幕，无配音、无口播。** 横屏 16:9，约 1 分 59 秒。
 

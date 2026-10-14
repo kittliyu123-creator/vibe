@@ -1,14 +1,18 @@
-# Hello Kitty 桌面小伙伴 · V2
+# Hello Kitty 桌面小伙伴 · V2.1
 
 参考用户提供的 Hello Kitty 图片制作，保留头上的粉色波点蝴蝶结，去掉身体下方的大蝴蝶结。透明背景，适用于 Windows 10 / 11 64 位。
 
-[下载 V2 免安装版 ZIP](../deliverables/hello-kitty-desktop-pet-v2-windows.zip?raw=true) · [直接下载 V2 EXE](../deliverables/HelloKittyPet-V2.exe?raw=true) · [观看互动预览](../deliverables/hello-kitty-pet-v2-preview.gif?raw=true) · [观看行走预览](../deliverables/hello-kitty-pet-v2-walking.gif?raw=true)
+[下载 V2.1 免安装版 ZIP](../deliverables/hello-kitty-desktop-pet-v2.1-windows.zip?raw=true) · [直接下载 V2.1 EXE](../deliverables/HelloKittyPet-V2.1.exe?raw=true) · [观看互动预览](../deliverables/hello-kitty-pet-v2-preview.gif?raw=true) · [观看行走预览](../deliverables/hello-kitty-pet-v2-walking.gif?raw=true)
+
+V2.1 新增全屏自动避让：应用覆盖整个屏幕且任务栏也被遮住时，宠物自动隐藏；退出全屏后自动回到原来的位置。桌面、普通窗口、浏览器最大化，以及任务栏仍可见的铺满窗口，都保持显示。
 
 V2 将头、躯干、双手与双脚分别绘制和运动，加入挥手、伸懒腰、交替迈步、平滑转头与眨眼。鼠标靠近时出现快捷按钮，眼睛会看向鼠标；喂食时会用双手捧起小饼干。
 
 ## 使用
 
-**升级时先右键退出旧版，再启动新版。** 解压 ZIP，双击 `HelloKittyPet-V2.exe`。首次启动时宠物出现在屏幕右下角，默认始终置顶。程序运行不需要联网或管理员权限，也不会自动添加开机启动。
+**升级时先右键退出旧版，再启动新版。** 解压 ZIP，双击 `HelloKittyPet-V2.1.exe`。首次启动时宠物出现在屏幕右下角，默认始终置顶。程序运行不需要联网或管理员权限，也不会自动添加开机启动。
+
+自动隐藏与恢复通常在半秒内完成，不会抢走正在使用的窗口焦点。多显示器时只检查宠物所在屏幕；通过菜单手动收起的宠物不会因退出全屏而自行出现。Windows 开启任务栏自动隐藏时，普通带边框的最大化窗口仍保持显示。若曾关闭“始终显示在最前面”，需重新开启才能让宠物出现在浏览器等窗口上方。
 
 | 操作 | 效果 |
 | --- | --- |
@@ -38,7 +42,7 @@ V2 将头、躯干、双手与双脚分别绘制和运动，加入挥手、伸�
 
 ```sh
 go test ./...
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o HelloKittyPet-V2.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o HelloKittyPet-V2.1.exe .
 ```
 
 Windows PowerShell：
@@ -46,9 +50,9 @@ Windows PowerShell：
 ```powershell
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
-go build -trimpath -ldflags="-s -w -H windowsgui" -o HelloKittyPet-V2.exe .
+go build -trimpath -ldflags="-s -w -H windowsgui" -o HelloKittyPet-V2.1.exe .
 ```
 
 原生 Win32 窗口和绘图使用 Go 标准库，无需安装浏览器运行时。应用图标与清单的 `rsrc_windows_amd64.syso` 已包含在源码中；修改图标后可使用 `github.com/akavel/rsrc` 重新生成。字体图集由 `make_font.py` 构建，所用 Noto Sans CJK 的许可证见 `FONT-LICENSE.txt`。
 
-已验证行为状态测试、透明像素与动画测试、Windows 64 位编译及 Wine 下的实际窗口交互；未在实体 Windows 电脑上测试。
+已验证行为状态测试、透明像素与动画测试、Windows 64 位编译及 Wine 下的实际窗口交互。V2.1 还通过了全屏覆盖、任务栏保持可见、退出全屏恢复、保留手动隐藏和恢复时不抢焦点的 Win32 窗口集成测试；未在实体 Windows 电脑或抖音客户端上测试。集成测试仅在 Wine 且设置 `PET_FULLSCREEN_INTEGRATION=1` 时运行，以免影响真实桌面。

@@ -182,35 +182,38 @@ type winNotifyData struct {
 }
 
 type winHost struct {
-	app             *PetApp
-	window          uintptr
-	instance        uintptr
-	icon            uintptr
-	dc              uintptr
-	bitmap          uintptr
-	previousBitmap  uintptr
-	pixels          []byte
-	width           int
-	height          int
-	x               int
-	y               int
-	scale           float64
-	dpi             float64
-	topmost         bool
-	hidden          bool
-	pressed         bool
-	dragged         bool
-	pressedControl  bool
-	controlCanceled bool
-	moveCarryX      float64
-	moveCarryY      float64
-	settingsPath    string
-	downCursor      winPoint
-	downWindow      winPoint
-	lastTick        time.Time
-	lastPaint       time.Time
-	taskbarCreated  uint32
-	lastError       error
+	app                 *PetApp
+	window              uintptr
+	instance            uintptr
+	icon                uintptr
+	dc                  uintptr
+	bitmap              uintptr
+	previousBitmap      uintptr
+	pixels              []byte
+	width               int
+	height              int
+	x                   int
+	y                   int
+	scale               float64
+	dpi                 float64
+	topmost             bool
+	hidden              bool
+	fullscreen          fullscreenGate
+	lastFullscreenCheck time.Time
+	menuOpen            bool
+	pressed             bool
+	dragged             bool
+	pressedControl      bool
+	controlCanceled     bool
+	moveCarryX          float64
+	moveCarryY          float64
+	settingsPath        string
+	downCursor          winPoint
+	downWindow          winPoint
+	lastTick            time.Time
+	lastPaint           time.Time
+	taskbarCreated      uint32
+	lastError           error
 }
 
 // A single UI instance owns all callbacks. Win32 dispatches them on the locked
@@ -329,7 +332,10 @@ func runNative(app *PetApp) error {
 	if err = host.paint(); err != nil {
 		return err
 	}
-	winShowWindow.Call(window, 4) // SW_SHOWNOACTIVATE
+	initialSnapshot := winFullscreenSnapshot(window)
+	host.fullscreen.Update(initialSnapshot, time.Now())
+	host.fullscreen.Hidden = shouldHideForFullscreen(initialSnapshot)
+	host.applyVisibility()
 	host.addTrayIcon()
 	defer host.removeTrayIcon()
 	if message, _, _ := winRegisterMessage.Call(uintptr(unsafe.Pointer(winUTF16("TaskbarCreated")))); message != 0 {
@@ -550,14 +556,19 @@ func (h *winHost) removeTrayIcon() {
 
 func (h *winHost) restore() {
 	h.hidden = false
+	h.checkFullscreen(time.Now(), true)
 	h.clampPosition(h.workArea())
 	h.moveWindow()
-	winShowWindow.Call(h.window, 4)
-	h.app.Action("hello")
+	h.applyVisibility()
+	if !h.effectivelyHidden() {
+		h.app.Action("hello")
+	}
 	h.lastTick = time.Now()
 }
 
 func (h *winHost) menu() {
+	h.menuOpen = true
+	defer func() { h.menuOpen = false }()
 	menu, _, _ := winCreatePopupMenu.Call()
 	if menu == 0 {
 		return
@@ -646,7 +657,7 @@ func (h *winHost) menu() {
 		h.restore()
 	case winMenuHide:
 		h.hidden = true
-		winShowWindow.Call(h.window, 0)
+		h.applyVisibility()
 	case winMenuRestore:
 		h.restore()
 	case winMenuExit:
@@ -699,7 +710,8 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 			if dt > .1 {
 				dt = .1
 			}
-			if h.hidden {
+			h.checkFullscreen(now, false)
+			if h.effectivelyHidden() {
 				return 0
 			}
 			px, py := h.pointerOnCanvas()
