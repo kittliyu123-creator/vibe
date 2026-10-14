@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 )
@@ -54,23 +55,55 @@ func exportDemo(dir string) error {
 		return err
 	}
 	a := newPetApp()
-	for i := 0; i < 144; i++ {
+	for i := 0; i < 320; i++ {
 		switch i {
 		case 0:
-			a.Action("hello")
-		case 24:
-			a.Action("pet")
-		case 54:
+			a.Action("wave")
+		case 56:
+			a.Action("stretch")
+		case 116:
 			a.Action("feed")
-		case 84:
+		case 180:
 			a.Action("play")
-		case 114:
+		case 260:
 			a.Action("sleep")
 		}
-		a.Tick(1.0 / 12)
+		a.SetPointer(240+85*math.Sin(float64(i)*.035), 260)
+		a.Tick(1.0 / 20)
 		out := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
 		draw.Draw(out, out.Rect, &image.Uniform{C: color.RGBA{245, 238, 241, 255}}, image.Point{}, draw.Src)
 		draw.Draw(out, out.Rect, a.Render(), image.Point{}, draw.Over)
+		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("%04d.png", i)))
+		if err != nil {
+			return err
+		}
+		err = png.Encode(f, out)
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exportWalkDemo(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	a := newPetApp()
+	a.Action("follow")
+	position := 80.0
+	for i := 0; i < 200; i++ {
+		target := 640.0
+		if i >= 100 {
+			target = 20
+		}
+		a.SetPointer(target-position, 230)
+		dx, _ := a.Tick(.05)
+		position += float64(dx)
+		out := image.NewRGBA(image.Rect(0, 0, 720, 480))
+		draw.Draw(out, out.Rect, &image.Uniform{C: color.RGBA{245, 238, 241, 255}}, image.Point{}, draw.Src)
+		draw.Draw(out, image.Rect(int(position), 0, int(position)+canvasWidth, canvasHeight), a.Render(), image.Point{}, draw.Over)
 		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("%04d.png", i)))
 		if err != nil {
 			return err

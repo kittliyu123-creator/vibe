@@ -15,8 +15,8 @@ import (
 	"strings"
 )
 
-const canvasWidth = 360
-const canvasHeight = 380
+const canvasWidth = 440
+const canvasHeight = 480
 
 //go:embed assets/*
 var assetFS embed.FS
@@ -30,6 +30,9 @@ var cream = color.RGBA{255, 250, 239, 255}
 var rose = color.RGBA{246, 136, 159, 255}
 
 func loadArtwork() error {
+	if err := loadRig(); err != nil {
+		return err
+	}
 	b, err := assetFS.ReadFile("assets/font.png")
 	if err != nil {
 		return err
@@ -74,7 +77,7 @@ func loadArtwork() error {
 	return nil
 }
 
-func (a *PetApp) Render() *image.RGBA {
+func (a *PetApp) legacyRender() *image.RGBA {
 	out := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
 	t := a.Time
 	phase := a.ActionTime
@@ -308,9 +311,10 @@ func drawBubble(dst *image.RGBA, text string) {
 	x, y := (canvasWidth-bw)/2, 82.0-bh
 	roundRect(dst, x+1, y+4, bw, bh, 17, color.RGBA{69, 57, 76, 26})
 	roundRect(dst, x, y, bw, bh, 17, color.RGBA{255, 251, 244, 249})
-	polygon(dst, []point{{173, y + bh - 1}, {186, y + bh - 1}, {180, y + bh + 9}}, color.RGBA{255, 251, 244, 249})
+	center := float64(canvasWidth) / 2
+	polygon(dst, []point{{center - 7, y + bh - 1}, {center + 6, y + bh - 1}, {center, y + bh + 9}}, color.RGBA{255, 251, 244, 249})
 	for i, ln := range wrapped {
-		drawText(dst, ln, 180-len([]rune(ln))*10, int(y)+12+i*27)
+		drawText(dst, ln, canvasWidth/2-len([]rune(ln))*10, int(y)+12+i*27)
 	}
 }
 

@@ -119,7 +119,7 @@ func TestParticlesAreEmittedOverTime(t *testing.T) {
 		t.Fatalf("expected an immediate first particle, got %d", len(p.Particles))
 	}
 	y := p.Particles[0].Y
-	p.Tick(0.4)
+	p.Tick(0.5)
 	if len(p.Particles) != 3 || p.Particles[0].Y >= y {
 		t.Fatalf("particles should stagger and rise: %+v", p.Particles)
 	}
@@ -154,5 +154,203 @@ func TestUnknownActionDoesNotInterruptSleep(t *testing.T) {
 	p.Action("unknown")
 	if !p.Sleeping() {
 		t.Fatal("unknown command should leave state unchanged")
+	}
+}
+
+func TestMovementIsOptInAndPreferencesAreExclusive(t *testing.T) {
+	p := newPetApp()
+	p.SetPointer(1500, -100)
+	for i := 0; i < 1800; i++ {
+		if dx, dy := p.Tick(1.0 / 60); dx != 0 || dy != 0 {
+			t.Fatal("default pet must not move the desktop window")
+		}
+	}
+	p.Action("follow")
+	if !p.Follow || p.Wander {
+		t.Fatal("follow preference did not enable exclusively")
+	}
+	p.Action("wander")
+	if p.Follow || !p.Wander {
+		t.Fatal("wander preference did not replace follow")
+	}
+	p.Action("wander")
+	if p.Follow || p.Wander {
+		t.Fatal("toggling wander again should park the pet")
+	}
+}
+
+func TestFollowingSpeedDeadZoneAndDirection(t *testing.T) {
+	for _, direction := range []float64{-1, 1} {
+		p := newPetApp()
+		p.Action("follow")
+		p.SetPointer(220+direction*1000, 50)
+		moved := 0
+		for i := 0; i < 120; i++ {
+			dx, dy := p.Tick(1.0 / 60)
+			if dy != 0 || math.Abs(float64(dx)) > 1 {
+				t.Fatalf("unexpected frame movement: %d, %d", dx, dy)
+			}
+			moved += dx
+		}
+		if math.Abs(float64(moved)-direction*70) > 1 || p.Facing != direction {
+			t.Fatalf("expected 35 px/s in direction %g, got %d", direction, moved)
+		}
+		// A stale cursor observation must still stop at its target.
+		p.SetPointer(220+direction*120.25, 50)
+		moved = 0
+		for i := 0; i < 600; i++ {
+			dx, _ := p.Tick(1.0 / 60)
+			moved += dx
+		}
+		if float64(moved) != direction*20 || p.Mode != "idle" || p.moveCarry != 0 {
+			t.Fatalf("did not stop cleanly outside dead zone: moved=%d, mode=%s, carry=%g", moved, p.Mode, p.moveCarry)
+		}
+		p.SetPointer(220-direction*1000, 50)
+		for i := 0; i < 10; i++ {
+			dx, _ := p.Tick(1.0 / 60)
+			if float64(dx)*direction > 0 {
+				t.Fatal("old fractional movement continued in the previous direction")
+			}
+		}
+		if p.Facing != -direction {
+			t.Fatal("pet did not turn toward cursor")
+		}
+	}
+}
+
+func TestMovementPausesForSleepDragAndResume(t *testing.T) {
+	for _, pause := range []string{"sleep", "drag"} {
+		p := newPetApp()
+		p.Action("follow")
+		p.SetPointer(1500, 50)
+		p.Tick(0.1)
+		if pause == "sleep" {
+			p.Action("sleep")
+		} else {
+			p.SetDragging(true)
+		}
+		for i := 0; i < 120; i++ {
+			if dx, dy := p.Tick(0.1); dx != 0 || dy != 0 {
+				t.Fatalf("pet moved during %s", pause)
+			}
+		}
+		if !p.Follow || p.moveCarry != 0 {
+			t.Fatal("pause should retain preference and discard old motion")
+		}
+		if pause == "sleep" {
+			p.Action("wake")
+			p.Tick(2)
+		} else {
+			p.SetDragging(false)
+		}
+		if dx, _ := p.Tick(0.1); dx <= 0 {
+			t.Fatalf("pet did not resume following after %s", pause)
+		}
+		if dx, dy := p.Tick(60 * 60); dx != 0 || dy != 0 || p.Mode != "idle" || p.moveCarry != 0 {
+			t.Fatal("resuming after system suspension must not jump")
+		}
+	}
+}
+
+func TestWanderingWaitsForControlsInteraction(t *testing.T) {
+	p := newPetApp()
+	p.Action("wander")
+	p.SetPointer(800, 40)
+	if dx, _ := p.Tick(0.1); dx == 0 || p.Mode != "walking" {
+		t.Fatal("explicit wandering did not start")
+	}
+	p.SetPointer(192, 444)
+	if dx, _ := p.Tick(0.1); dx != 0 || p.Mode != "idle" {
+		t.Fatal("pet should wait while owner approaches its controls")
+	}
+}
+
+func TestPointerValidationSmoothingAndSleepGaze(t *testing.T) {
+	p := newPetApp()
+	p.SetPointer(400, 50)
+	p.Tick(0.05)
+	if p.LookX <= 0 || p.LookX >= 1 || p.LookY >= 0 || p.LookY <= -1 {
+		t.Fatalf("gaze should ease toward cursor: %g, %g", p.LookX, p.LookY)
+	}
+	x, y := p.pointerX, p.pointerY
+	for _, invalid := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		p.SetPointer(invalid, 0)
+		p.SetPointer(0, invalid)
+	}
+	if p.pointerX != x || p.pointerY != y {
+		t.Fatal("invalid cursor input changed gaze target")
+	}
+	p.Action("sleep")
+	p.Tick(0.5)
+	if math.Abs(p.LookX) >= 0.01 || math.Abs(p.LookY) >= 0.01 {
+		t.Fatal("sleeping gaze should settle toward center")
+	}
+}
+
+func TestToolbarTargetsVisibilityGraceAndDrag(t *testing.T) {
+	p := newPetApp()
+	if p.ActionAt(136, 444) || p.ControlHit(136, 444) {
+		t.Fatal("hidden controls must not handle mouse clicks")
+	}
+	p.SetPointer(220, 230)
+	p.Tick(0.1)
+	for _, test := range []struct {
+		x    float64
+		mode string
+	}{{136, "happy"}, {192, "eating"}, {248, "playing"}, {304, "sleeping"}} {
+		if !p.ControlHit(test.x, 444) || !p.ActionAt(test.x, 444) || p.Mode != test.mode {
+			t.Fatalf("wrong action at %g: %s", test.x, p.Mode)
+		}
+	}
+	for _, point := range [][2]float64{{164, 444}, {136, 410}, {math.NaN(), 444}, {136, math.Inf(1)}} {
+		if p.ActionAt(point[0], point[1]) {
+			t.Fatalf("handled click outside a circular control: %v", point)
+		}
+	}
+	p.SetPointer(700, 700)
+	p.Tick(0.5)
+	if p.ControlsAlpha < 0.8 || !p.ControlHit(136, 444) {
+		t.Fatal("brief pointer exit should preserve toolbar for easier targeting")
+	}
+	p.Tick(0.6)
+	p.Tick(0.4)
+	if p.ControlsAlpha != 0 || p.ControlHit(136, 444) {
+		t.Fatal("toolbar should fade and stop handling input after grace expires")
+	}
+	p.SetPointer(136, 444)
+	p.Tick(0.1)
+	p.SetDragging(true)
+	if p.ControlsAlpha != 0 || p.ActionAt(136, 444) || p.ControlHit(136, 444) {
+		t.Fatal("dragging should immediately hide and disable toolbar")
+	}
+}
+
+func TestIdleGesturesFinishAndNewActionsResetTheirClock(t *testing.T) {
+	p := newPetApp()
+	gestures := 0
+	previous := p.Mode
+	for i := 0; i < 3600; i++ {
+		p.Tick(1.0 / 60)
+		if p.Mode != previous && (p.Mode == "waving" || p.Mode == "stretching") {
+			gestures++
+		}
+		previous = p.Mode
+	}
+	if gestures < 2 || gestures > 5 {
+		t.Fatalf("idle gestures should be occasional, got %d in a minute", gestures)
+	}
+	p.Action("wave")
+	p.Tick(2)
+	p.Action("stretch")
+	if p.Mode != "stretching" || p.ActionTime != 0 {
+		t.Fatal("new action must restart the animation clock")
+	}
+	p.Tick(2.9)
+	if p.Mode != "stretching" {
+		t.Fatal("previous action clock prematurely ended the new action")
+	}
+	p.Tick(0.2)
+	if p.Mode != "idle" {
+		t.Fatal("stretch did not finish")
 	}
 }

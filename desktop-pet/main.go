@@ -11,6 +11,7 @@ import (
 func main() {
 	preview := flag.String("preview", "", "render interaction previews to this directory")
 	demo := flag.String("demo", "", "render a short animation to this directory")
+	walkDemo := flag.String("walk-demo", "", "render desktop walking demonstration")
 	icon := flag.String("icon", "", "export Windows application icon")
 	flag.Parse()
 	if err := loadArtwork(); err != nil {
@@ -18,6 +19,13 @@ func main() {
 		return
 	}
 	app := newPetApp()
+	if *walkDemo != "" {
+		if err := exportWalkDemo(*walkDemo); err != nil {
+			showError(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *icon != "" {
 		if err := exportIcon(*icon); err != nil {
 			showError(err)
@@ -48,8 +56,12 @@ func previewFrames(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	for _, action := range []string{"hello", "pet", "feed", "play", "sleep"} {
+	for _, action := range []string{"hello", "pet", "wave", "stretch", "feed", "play", "sleep", "follow"} {
 		app := newPetApp()
+		app.SetPointer(300, 250)
+		if action == "follow" {
+			app.SetPointer(650, 250)
+		}
 		app.Action(action)
 		for i := 0; i < 18; i++ {
 			app.Tick(1.0 / 30)

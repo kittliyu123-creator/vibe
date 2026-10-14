@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"math"
 	"runtime"
 	"syscall"
 	"time"
@@ -47,10 +48,12 @@ var (
 	winTrackPopupMenu      = winUser32.NewProc("TrackPopupMenu")
 	winDestroyMenu         = winUser32.NewProc("DestroyMenu")
 	winSetForegroundWindow = winUser32.NewProc("SetForegroundWindow")
+	winGetForegroundWindow = winUser32.NewProc("GetForegroundWindow")
 	winFindWindow          = winUser32.NewProc("FindWindowW")
 	winSystemParameters    = winUser32.NewProc("SystemParametersInfoW")
 	winGetSystemMetrics    = winUser32.NewProc("GetSystemMetrics")
 	winMonitorFromWindow   = winUser32.NewProc("MonitorFromWindow")
+	winMonitorFromRect     = winUser32.NewProc("MonitorFromRect")
 	winGetMonitorInfo      = winUser32.NewProc("GetMonitorInfoW")
 	winSetDPIContext       = winUser32.NewProc("SetProcessDpiAwarenessContext")
 	winSetDPIAware         = winUser32.NewProc("SetProcessDPIAware")
@@ -80,6 +83,7 @@ const (
 	winWMClose          = 0x0010
 	winWMSettingChange  = 0x001A
 	winWMDisplayChange  = 0x007E
+	winWMMouseActivate  = 0x0021
 	winWMMouseMove      = 0x0200
 	winWMLButtonDown    = 0x0201
 	winWMLButtonUp      = 0x0202
@@ -93,6 +97,10 @@ const (
 	winMenuFeed    = 101
 	winMenuPlay    = 102
 	winMenuSleep   = 103
+	winMenuWave    = 104
+	winMenuStretch = 105
+	winMenuFollow  = 106
+	winMenuWander  = 107
 	winMenuTopmost = 110
 	winMenuSmall   = 120
 	winMenuNormal  = 121
@@ -174,29 +182,35 @@ type winNotifyData struct {
 }
 
 type winHost struct {
-	app            *PetApp
-	window         uintptr
-	instance       uintptr
-	icon           uintptr
-	dc             uintptr
-	bitmap         uintptr
-	previousBitmap uintptr
-	pixels         []byte
-	width          int
-	height         int
-	x              int
-	y              int
-	scale          float64
-	dpi            float64
-	topmost        bool
-	hidden         bool
-	pressed        bool
-	dragged        bool
-	downCursor     winPoint
-	downWindow     winPoint
-	lastTick       time.Time
-	taskbarCreated uint32
-	lastError      error
+	app             *PetApp
+	window          uintptr
+	instance        uintptr
+	icon            uintptr
+	dc              uintptr
+	bitmap          uintptr
+	previousBitmap  uintptr
+	pixels          []byte
+	width           int
+	height          int
+	x               int
+	y               int
+	scale           float64
+	dpi             float64
+	topmost         bool
+	hidden          bool
+	pressed         bool
+	dragged         bool
+	pressedControl  bool
+	controlCanceled bool
+	moveCarryX      float64
+	moveCarryY      float64
+	settingsPath    string
+	downCursor      winPoint
+	downWindow      winPoint
+	lastTick        time.Time
+	lastPaint       time.Time
+	taskbarCreated  uint32
+	lastError       error
 }
 
 // A single UI instance owns all callbacks. Win32 dispatches them on the locked
@@ -240,7 +254,11 @@ func runNative(app *PetApp) error {
 		winSetDPIAware.Call()
 	}
 
-	host := &winHost{app: app, scale: 1, dpi: 96, topmost: true, lastTick: time.Now()}
+	settingsPath, _ := petSettingsPath()
+	settings, _ := loadPetSettings(settingsPath)
+	host := &winHost{app: app, scale: settings.Scale, dpi: 96, topmost: settings.Topmost,
+		lastTick: time.Now(), settingsPath: settingsPath}
+	app.Follow, app.Wander = settings.Follow, settings.Wander
 	winActiveHost = host
 	defer func() { winActiveHost = nil }()
 	host.instance, _, _ = winGetModuleHandle.Call(0)
@@ -267,9 +285,18 @@ func runNative(app *PetApp) error {
 		}
 	}
 	host.width, host.height = host.dimensions()
-	host.resetPosition(false)
+	if settings.HasPosition {
+		host.x, host.y = settings.X, settings.Y
+		host.clampPosition(host.workArea())
+	} else {
+		host.resetPosition(false)
+	}
+	extendedStyle := uintptr(0x00080000 | 0x00000080 | 0x08000000) // LAYERED | TOOLWINDOW | NOACTIVATE
+	if host.topmost {
+		extendedStyle |= 0x00000008
+	}
 	window, _, err := winCreateWindow.Call(
-		0x00080000|0x00000080|0x00000008, // LAYERED | TOOLWINDOW | TOPMOST
+		extendedStyle,
 		uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(winUTF16(winTitle))),
 		0x80000000, // WS_POPUP
 		uintptr(host.x), uintptr(host.y), uintptr(host.width), uintptr(host.height),
@@ -286,7 +313,11 @@ func runNative(app *PetApp) error {
 		}
 	}
 	host.width, host.height = host.dimensions()
-	host.resetPosition(false)
+	if settings.HasPosition {
+		host.clampPosition(host.workArea())
+	} else {
+		host.resetPosition(false)
+	}
 	host.dc, _, err = winCreateCompatibleDC.Call(0)
 	if host.dc == 0 {
 		return fmt.Errorf("创建绘图上下文: %w", err)
@@ -329,12 +360,18 @@ func (h *winHost) dimensions() (int, int) {
 }
 
 func (h *winHost) workArea() winRect {
+	var monitor uintptr
 	if h.window != 0 {
-		monitor, _, _ := winMonitorFromWindow.Call(h.window, 2) // nearest monitor
-		info := winMonitorInfo{Size: uint32(unsafe.Sizeof(winMonitorInfo{}))}
-		if ok, _, _ := winGetMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
-			return info.Work
-		}
+		monitor, _, _ = winMonitorFromWindow.Call(h.window, 2) // nearest monitor
+	} else {
+		// Resolve a saved position before creating the window. This preserves a
+		// secondary monitor placement and recovers safely after unplugging it.
+		rect := winRect{int32(h.x), int32(h.y), int32(h.x + h.width), int32(h.y + h.height)}
+		monitor, _, _ = winMonitorFromRect.Call(uintptr(unsafe.Pointer(&rect)), 2)
+	}
+	info := winMonitorInfo{Size: uint32(unsafe.Sizeof(winMonitorInfo{}))}
+	if ok, _, _ := winGetMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); ok != 0 {
+		return info.Work
 	}
 	var area winRect
 	if ok, _, _ := winSystemParameters.Call(0x0030, 0, uintptr(unsafe.Pointer(&area)), 0); ok != 0 {
@@ -343,6 +380,22 @@ func (h *winHost) workArea() winRect {
 	w, _, _ := winGetSystemMetrics.Call(0)
 	v, _, _ := winGetSystemMetrics.Call(1)
 	return winRect{Right: int32(w), Bottom: int32(v)}
+}
+
+func (h *winHost) savePreferences() {
+	// Preference failures must not interrupt an interaction or prevent exit.
+	// Missing/corrupt settings always recover to safe defaults on next launch.
+	_ = savePetSettings(h.settingsPath, petSettings{
+		Version: 2, HasPosition: true, X: h.x, Y: h.y, Scale: h.scale,
+		Topmost: h.topmost, Follow: h.app.Follow, Wander: h.app.Wander,
+	})
+}
+
+func (h *winHost) pointerOnCanvas() (float64, float64) {
+	var cursor winPoint
+	winGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
+	ratio := h.scale * h.dpi / 96
+	return float64(int(cursor.X)-h.x) / ratio, float64(int(cursor.Y)-h.y) / ratio
 }
 
 func (h *winHost) resetPosition(move bool) {
@@ -407,6 +460,7 @@ func (h *winHost) releaseGraphics() {
 }
 
 func (h *winHost) paint() error {
+	h.lastPaint = time.Now()
 	source := h.app.Render()
 	if source == nil {
 		return nil
@@ -424,21 +478,60 @@ func (h *winHost) paint() error {
 	return nil
 }
 
+func (h *winHost) paintDue(now time.Time) bool {
+	// Keep input, gaze and movement updates on the regular 33 ms timer while
+	// drawing quiet idle at roughly 15 fps and quiet sleep at roughly 10 fps.
+	// Small timing margins avoid skipping an extra tick due to timer jitter.
+	interval := 30 * time.Millisecond
+	quiet := !h.app.Hover && h.app.ControlsAlpha < .01 && h.app.Bubble == ""
+	if quiet && h.app.Sleeping() {
+		interval = 92 * time.Millisecond
+	} else if quiet && h.app.Mode == "idle" {
+		interval = 60 * time.Millisecond
+	}
+	return now.Sub(h.lastPaint) >= interval
+}
+
 // Go image.RGBA already stores premultiplied values, as UpdateLayeredWindow
-// requires. Only channel order and (when requested) nearest-neighbor scale
-// change here, preserving the crisp pixel-art edges and alpha-zero hit holes.
+// requires. Interpolate those values together to keep soft illustration edges
+// smooth at Windows display scales without introducing dark alpha fringes.
 func winCopyPremultipliedBGRA(dst []byte, width, height int, src *image.RGBA) {
 	sw, sh := src.Rect.Dx(), src.Rect.Dy()
 	if sw == 0 || sh == 0 {
 		clear(dst)
 		return
 	}
+	if width == sw && height == sh {
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				si, di := y*src.Stride+x*4, (y*width+x)*4
+				dst[di], dst[di+1], dst[di+2], dst[di+3] = src.Pix[si+2], src.Pix[si+1], src.Pix[si], src.Pix[si+3]
+			}
+		}
+		return
+	}
+	type sample struct{ low, high, weight int }
+	xs := make([]sample, width)
+	axisSample := func(at, size, source int) sample {
+		v := (float64(at)+.5)*float64(source)/float64(size) - .5
+		v = math.Max(0, math.Min(float64(source-1), v))
+		low := int(v)
+		return sample{low, min(low+1, source-1), int((v-float64(low))*256 + .5)}
+	}
+	for x := range xs {
+		xs[x] = axisSample(x, width, sw)
+	}
 	for y := 0; y < height; y++ {
-		sy := y * sh / height
-		for x := 0; x < width; x++ {
-			si := sy*src.Stride + (x*sw/width)*4
+		ys := axisSample(y, height, sh)
+		for x, sx := range xs {
+			i00, i10 := ys.low*src.Stride+sx.low*4, ys.low*src.Stride+sx.high*4
+			i01, i11 := ys.high*src.Stride+sx.low*4, ys.high*src.Stride+sx.high*4
 			di := (y*width + x) * 4
-			dst[di], dst[di+1], dst[di+2], dst[di+3] = src.Pix[si+2], src.Pix[si+1], src.Pix[si], src.Pix[si+3]
+			for destination, channel := range [...]int{2, 1, 0, 3} {
+				top := int(src.Pix[i00+channel])*(256-sx.weight) + int(src.Pix[i10+channel])*sx.weight
+				bottom := int(src.Pix[i01+channel])*(256-sx.weight) + int(src.Pix[i11+channel])*sx.weight
+				dst[di+destination] = byte((top*(256-ys.weight) + bottom*ys.weight + 32768) >> 16)
+			}
 		}
 	}
 }
@@ -481,11 +574,16 @@ func (h *winHost) menu() {
 	add(winMenuPet, "摸摸脑袋", false)
 	add(winMenuFeed, "喂一口零食", false)
 	add(winMenuPlay, "一起玩耍", false)
+	add(winMenuWave, "挥挥小手", false)
+	add(winMenuStretch, "伸个懒腰", false)
 	if h.app.Sleeping() {
 		add(winMenuSleep, "轻轻叫醒", false)
 	} else {
 		add(winMenuSleep, "让它睡一会儿", false)
 	}
+	separator()
+	add(winMenuFollow, "跟着鼠标走", h.app.Follow)
+	add(winMenuWander, "自己散散步", h.app.Wander)
 	separator()
 	add(winMenuTopmost, "始终显示在最前面", h.topmost)
 	add(winMenuSmall, "小号  80%", h.scale == .8)
@@ -502,9 +600,13 @@ func (h *winHost) menu() {
 	add(winMenuExit, "退出小伙伴", false)
 	var cursor winPoint
 	winGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
+	previousForeground, _, _ := winGetForegroundWindow.Call()
 	winSetForegroundWindow.Call(h.window)
 	choice, _, _ := winTrackPopupMenu.Call(menu, 0x0100|0x0002, uintptr(cursor.X), uintptr(cursor.Y), 0, h.window, 0)
 	winPostMessage.Call(h.window, 0, 0, 0) // documented foreground-menu dismissal fix
+	if previousForeground != 0 && previousForeground != h.window {
+		winSetForegroundWindow.Call(previousForeground)
+	}
 	switch int(choice) {
 	case winMenuPet:
 		h.app.Action("pet")
@@ -512,6 +614,14 @@ func (h *winHost) menu() {
 		h.app.Action("feed")
 	case winMenuPlay:
 		h.app.Action("play")
+	case winMenuWave:
+		h.app.Action("wave")
+	case winMenuStretch:
+		h.app.Action("stretch")
+	case winMenuFollow:
+		h.app.Action("follow")
+	case winMenuWander:
+		h.app.Action("wander")
 	case winMenuSleep:
 		if h.app.Sleeping() {
 			h.app.Action("wake")
@@ -541,6 +651,9 @@ func (h *winHost) menu() {
 		h.restore()
 	case winMenuExit:
 		winDestroyWindow.Call(h.window)
+	}
+	if choice != 0 && choice != winMenuExit {
+		h.savePreferences()
 	}
 }
 
@@ -576,6 +689,8 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 		return 0
 	}
 	switch message {
+	case winWMMouseActivate:
+		return 3 // MA_NOACTIVATE: deliver clicks while preserving keyboard focus.
 	case winWMTimer:
 		if wParam == winTimerID {
 			now := time.Now()
@@ -587,19 +702,38 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 			if h.hidden {
 				return 0
 			}
+			px, py := h.pointerOnCanvas()
+			h.app.SetPointer(px, py)
 			dx, dy := h.app.Tick(dt)
 			if !h.pressed && (dx != 0 || dy != 0) {
-				h.x += dx
-				h.y += dy
+				ratio := h.scale * h.dpi / 96
+				h.moveCarryX += float64(dx) * ratio
+				h.moveCarryY += float64(dy) * ratio
+				mx, my := int(math.Trunc(h.moveCarryX)), int(math.Trunc(h.moveCarryY))
+				h.moveCarryX -= float64(mx)
+				h.moveCarryY -= float64(my)
+				h.x += mx
+				h.y += my
+				wantedX := h.x
 				h.clampPosition(h.workArea())
+				if h.app.Wander && h.x != wantedX {
+					h.app.Facing = -h.app.Facing
+					h.moveCarryX = 0
+				}
 			}
-			if err := h.paint(); err != nil {
-				h.fail(err)
+			if h.paintDue(now) {
+				if err := h.paint(); err != nil {
+					h.fail(err)
+				}
 			}
 		}
 		return 0
 	case winWMLButtonDown, winWMLButtonDbl:
 		h.pressed, h.dragged = true, false
+		px, py := h.pointerOnCanvas()
+		h.app.SetPointer(px, py)
+		h.pressedControl = h.app.ToolbarHit(px, py)
+		h.controlCanceled = false
 		winGetCursorPos.Call(uintptr(unsafe.Pointer(&h.downCursor)))
 		h.downWindow = winPoint{int32(h.x), int32(h.y)}
 		winSetCapture.Call(window)
@@ -609,6 +743,12 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 			var cursor winPoint
 			winGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
 			dx, dy := cursor.X-h.downCursor.X, cursor.Y-h.downCursor.Y
+			if h.pressedControl {
+				if dx*dx+dy*dy >= 16 {
+					h.controlCanceled = true
+				}
+				return 0
+			}
 			if !h.dragged && (dx*dx+dy*dy >= 16) {
 				h.dragged = true
 				h.app.SetDragging(true)
@@ -627,10 +767,15 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 			winReleaseCapture.Call()
 			h.app.SetDragging(false)
 			if !dragged {
-				h.app.Action("pet")
+				px, py := h.pointerOnCanvas()
+				h.app.SetPointer(px, py)
+				if !h.controlCanceled && !h.app.ActionAt(px, py) && !h.pressedControl {
+					h.app.Action("pet")
+				}
 			} else {
 				h.clampPosition(h.workArea())
 				h.moveWindow()
+				h.savePreferences()
 			}
 		}
 		return 0
@@ -638,6 +783,9 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 		if h.pressed {
 			h.pressed = false
 			h.app.SetDragging(false)
+			h.clampPosition(h.workArea())
+			h.moveWindow()
+			h.savePreferences()
 		}
 		return 0
 	case winWMRButtonUp:
@@ -668,6 +816,7 @@ func winWindowProcedure(window uintptr, message uint32, wParam, lParam uintptr) 
 		winDestroyWindow.Call(window)
 		return 0
 	case winWMDestroy:
+		h.savePreferences()
 		winKillTimer.Call(window, winTimerID)
 		winPostQuitMessage.Call(0)
 		return 0

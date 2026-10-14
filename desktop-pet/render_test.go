@@ -9,11 +9,12 @@ func TestArtworkAndWindowsAlpha(t *testing.T) {
 	if err := loadArtwork(); err != nil {
 		t.Fatal(err)
 	}
-	if petArt == nil || sleepArt == nil {
-		t.Fatal("both pet expressions must be embedded")
+	if petArt == nil || sleepArt == nil || len(rigArt) != 4 {
+		t.Fatal("all character layers must be embedded")
 	}
-	for _, action := range []string{"hello", "pet", "feed", "play", "sleep"} {
+	for _, action := range []string{"hello", "pet", "wave", "stretch", "feed", "play", "sleep", "follow"} {
 		a := newPetApp()
+		a.SetPointer(300, 250)
 		a.Action(action)
 		a.Tick(.6)
 		frame := a.Render()
