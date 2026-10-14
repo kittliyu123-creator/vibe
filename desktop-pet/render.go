@@ -23,16 +23,12 @@ var assetFS embed.FS
 
 var petArt image.Image
 var sleepArt image.Image
+var waveArt image.Image
 var fontAtlas image.Image
 var fontGlyphs map[string]int
-var ink = color.RGBA{66, 60, 76, 255}
 var cream = color.RGBA{255, 250, 239, 255}
-var rose = color.RGBA{246, 136, 159, 255}
 
 func loadArtwork() error {
-	if err := loadRig(); err != nil {
-		return err
-	}
 	b, err := assetFS.ReadFile("assets/font.png")
 	if err != nil {
 		return err
@@ -48,7 +44,7 @@ func loadArtwork() error {
 	if err = json.Unmarshal(b, &fontGlyphs); err != nil {
 		return err
 	}
-	// An adjacent PNG lets the user change the pet without recompiling.
+	// An adjacent complete PNG overrides the illustration without changing its proportions.
 	if exe, e := os.Executable(); e == nil {
 		p := filepath.Join(filepath.Dir(exe), "pet.png")
 		if b, e = os.ReadFile(p); e == nil {
@@ -57,6 +53,8 @@ func loadArtwork() error {
 				return fmt.Errorf("pet.png: %w", e)
 			}
 			petArt = prepareSprite(petArt)
+			sleepArt = nil // A custom image must not blink into the embedded character.
+			waveArt = nil
 			return nil
 		}
 	}
@@ -74,149 +72,14 @@ func loadArtwork() error {
 		}
 		sleepArt = prepareSprite(sleepArt)
 	}
+	if b, err = assetFS.ReadFile("assets/pet-wave.png"); err == nil {
+		waveArt, err = png.Decode(bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+		waveArt = prepareSprite(waveArt)
+	}
 	return nil
-}
-
-func (a *PetApp) legacyRender() *image.RGBA {
-	out := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
-	t := a.Time
-	phase := a.ActionTime
-	bob := 2.8 * math.Sin(t*2.1)
-	sx, sy := 1.0+0.018*math.Sin(t*2.1), 1.0-0.018*math.Sin(t*2.1)
-	angle := 0.016 * math.Sin(t*1.4)
-	y := 292.0 + bob
-	switch a.Mode {
-	case "happy":
-		y -= 15 * math.Abs(math.Sin(phase*8)) * math.Exp(-phase*0.6)
-		angle = 0.06 * math.Sin(phase*12)
-	case "eating":
-		sy -= 0.05 * math.Abs(math.Sin(phase*10))
-		angle = 0.04 * math.Sin(phase*8)
-	case "playing":
-		y -= 32 * math.Abs(math.Sin(phase*5))
-		angle = 0.12 * math.Sin(phase*5)
-	case "sleeping":
-		sx = 1.07 + 0.025*math.Sin(t*1.8)
-		sy = 0.88 - 0.025*math.Sin(t*1.8)
-		y = 303
-		angle = -0.05
-	case "dragging":
-		sy, sx = 1.07, 0.96
-		angle = 0.10 * math.Sin(t*7)
-	}
-	ellipse(out, 180, 324, 75-0.25*(292-y), 10, color.RGBA{60, 50, 70, 34})
-	if petArt == nil {
-		drawPlaceholder(out, 180, y, sx, sy, angle, a.Mode, t)
-	} else {
-		art := petArt
-		if sleepArt != nil && (a.Mode == "sleeping" || (a.Mode == "idle" && math.Mod(t, 5.3) > 5.12)) {
-			art = sleepArt
-		}
-		drawSprite(out, art, 180, y+26, sx, sy, angle)
-	}
-	if a.Mode == "eating" {
-		roundRect(out, 150, 308, 60, 18, 8, color.RGBA{192, 178, 222, 255})
-		ellipse(out, 180, 308, 30, 7, color.RGBA{114, 99, 145, 255})
-		for i := 0; i < 6; i++ {
-			circle(out, 160+float64(i)*7, 307+2*math.Sin(float64(i)*2), 3, color.RGBA{217, 174, 107, 255})
-		}
-	}
-	if a.Mode == "playing" {
-		bx, by := 266+28*math.Sin(phase*3), 310-38*math.Abs(math.Sin(phase*5))
-		circle(out, bx, by, 16, color.RGBA{151, 200, 204, 255})
-		line(out, bx-10, by-9, bx+10, by+9, 3, cream)
-		line(out, bx-10, by+9, bx+10, by-9, 3, cream)
-	}
-	if a.Mode == "sleeping" {
-		for i := 0; i < 3; i++ {
-			p := math.Mod(t*0.4+float64(i)/3, 1)
-			c := color.RGBA{133, 119, 163, uint8(220 * (1 - p))}
-			x, y := 240+p*34, 186-p*70
-			line(out, x, y, x+12, y, 2.5, c)
-			line(out, x+12, y, x, y+13, 2.5, c)
-			line(out, x, y+13, x+12, y+13, 2.5, c)
-		}
-	}
-	for _, p := range a.Particles {
-		x, y := p.X*canvasWidth, p.Y*canvasHeight
-		alpha := uint8(math.Max(0, math.Min(255, 255*(1-p.Age/p.Life))))
-		switch p.Kind {
-		case "heart":
-			heart(out, x, y, 9, color.RGBA{246, 136, 159, alpha})
-		case "star":
-			star(out, x, y, 8, color.RGBA{238, 194, 106, alpha})
-		default:
-			circle(out, x, y, 3, color.RGBA{217, 174, 107, alpha})
-		}
-	}
-	if a.Bubble != "" && a.Time < a.BubbleUntil {
-		drawBubble(out, a.Bubble)
-	}
-	return out
-}
-
-// Neutral construction placeholder, replaced after the user's reference arrives.
-func drawPlaceholder(dst *image.RGBA, x, y, sx, sy, angle float64, mode string, t float64) {
-	p := image.NewRGBA(image.Rect(0, 0, 220, 230))
-	outline := color.RGBA{107, 98, 112, 255}
-	ellipse(p, 70, 45, 28, 36, outline)
-	ellipse(p, 150, 45, 28, 36, outline)
-	ellipse(p, 70, 44, 24, 32, cream)
-	ellipse(p, 150, 44, 24, 32, cream)
-	ellipse(p, 70, 46, 12, 21, color.RGBA{244, 198, 201, 255})
-	ellipse(p, 150, 46, 12, 21, color.RGBA{244, 198, 201, 255})
-	ellipse(p, 110, 133, 89, 83, outline)
-	ellipse(p, 110, 132, 85, 80, cream)
-	ellipse(p, 62, 203, 29, 14, outline)
-	ellipse(p, 158, 203, 29, 14, outline)
-	ellipse(p, 62, 201, 26, 12, cream)
-	ellipse(p, 158, 201, 26, 12, cream)
-	ellipse(p, 58, 140, 14, 8, color.RGBA{250, 204, 204, 255})
-	ellipse(p, 162, 140, 14, 8, color.RGBA{250, 204, 204, 255})
-	closed := mode == "sleeping" || math.Mod(t, 4.7) < 0.16
-	if closed {
-		line(p, 73, 119, 88, 123, 4, ink)
-		line(p, 132, 123, 147, 119, 4, ink)
-	} else {
-		ellipse(p, 80, 120, 5.5, 9, ink)
-		ellipse(p, 140, 120, 5.5, 9, ink)
-		circle(p, 81.5, 117, 1.8, cream)
-		circle(p, 141.5, 117, 1.8, cream)
-	}
-	ellipse(p, 110, 136, 4.5, 3.3, rose)
-	if mode == "happy" || mode == "playing" {
-		ellipse(p, 110, 149, 7, 6, ink)
-		ellipse(p, 110, 151, 4, 2, rose)
-	} else {
-		line(p, 103, 146, 110, 149, 2, ink)
-		line(p, 110, 149, 117, 146, 2, ink)
-	}
-	// Soft scarf keeps the placeholder visibly provisional but lively.
-	roundRect(p, 74, 172, 72, 14, 6, color.RGBA{147, 185, 188, 255})
-	roundRect(p, 127, 178, 15, 24, 5, color.RGBA{147, 185, 188, 255})
-	drawSprite(dst, p, x, y+26, sx, sy, angle)
-}
-
-func drawSprite(dst *image.RGBA, src image.Image, cx, base, sx, sy, angle float64) {
-	b := src.Bounds()
-	fit := math.Min(218/float64(b.Dx()), 228/float64(b.Dy()))
-	sx *= fit
-	sy *= fit
-	co, si := math.Cos(angle), math.Sin(angle)
-	cy := base - float64(b.Dy())*sy/2
-	for y := 82; y < 344; y++ {
-		for x := 35; x < 325; x++ {
-			dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
-			u, v := (dx*co+dy*si)/sx+float64(b.Dx())/2, (-dx*si+dy*co)/sy+float64(b.Dy())/2
-			if u < 0 || v < 0 || u >= float64(b.Dx()) || v >= float64(b.Dy()) {
-				continue
-			}
-			c := sampleSprite(src, u, v)
-			if c.A > 0 {
-				blendPremult(dst, x, y, c.R, c.G, c.B, c.A)
-			}
-		}
-	}
 }
 
 // Prefilter large source art once, then bilinear sample animation frames.

@@ -73,7 +73,7 @@ func (p *PetApp) SetPointer(x, y float64) {
 	p.pointerX = math.Max(-100000, math.Min(100000, x))
 	p.pointerY = math.Max(-100000, math.Min(100000, y))
 	p.pointerKnown = true
-	p.Hover = x >= 65 && x <= 375 && y >= 125 && y <= 470
+	p.Hover = x >= 65 && x <= 375 && y >= 80 && y <= 470
 	if p.Hover {
 		p.hoverUntil = p.Time + 1
 	}
@@ -294,7 +294,7 @@ func (p *PetApp) Action(command string) {
 		p.say("嗨，我在这里", 2.7)
 	case "stretch":
 		p.setMode("stretching", 3)
-		p.say("伸个懒腰～", 2.7)
+		p.say("歪歪头，陪着你", 2.7)
 	case "sleep":
 		if p.Sleeping() {
 			p.wake()
@@ -430,8 +430,8 @@ func (p *PetApp) makeParticle(kind string) Particle {
 		Life: 1.3 + p.random()*0.6, Kind: kind,
 	}
 	if kind == "crumb" {
-		particle.X = 0.47 + p.random()*0.06
-		particle.Y = 0.70
+		particle.X = 0.45 + p.random()*0.03
+		particle.Y = 0.60
 		particle.VY = 0.035 + p.random()*0.035
 		particle.Life = 0.5 + p.random()*0.35
 	}

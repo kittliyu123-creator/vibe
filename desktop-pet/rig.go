@@ -1,295 +1,130 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
-	"image/png"
 	"math"
 )
 
-var rigArt map[string]*image.RGBA
-var petBrown = color.RGBA{116, 60, 37, 255}
+// The reference is kept whole. One uniform scale preserves the original face,
+// head/body proportions, seated pose, limbs and bow in every animation state.
+type characterPose struct{ x, y, scale, angle float64 }
 
-func loadRig() error {
-	rigArt = make(map[string]*image.RGBA)
-	for _, name := range []string{"head", "body", "paw", "foot"} {
-		data, err := assetFS.ReadFile("assets/rig-" + name + ".png")
-		if err != nil {
-			return err
-		}
-		art, err := png.Decode(bytes.NewReader(data))
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		// Layer bounds are determined once; the animation never distorts a full
-		// character image to approximate moving its limbs.
-		b := art.Bounds()
-		crop := image.Rectangle{Min: b.Max, Max: b.Min}
-		for y := b.Min.Y; y < b.Max.Y; y++ {
-			for x := b.Min.X; x < b.Max.X; x++ {
-				_, _, _, a := art.At(x, y).RGBA()
-				if a < 8*257 {
-					continue
-				}
-				if x < crop.Min.X {
-					crop.Min.X = x
-				}
-				if y < crop.Min.Y {
-					crop.Min.Y = y
-				}
-				if x >= crop.Max.X {
-					crop.Max.X = x + 1
-				}
-				if y >= crop.Max.Y {
-					crop.Max.Y = y + 1
-				}
-			}
-		}
-		if crop.Empty() {
-			return fmt.Errorf("empty %s layer", name)
-		}
-		crop = crop.Inset(-3).Intersect(b)
-		tight := image.NewRGBA(image.Rect(0, 0, crop.Dx(), crop.Dy()))
-		draw.Draw(tight, tight.Rect, art, crop.Min, draw.Src)
-		rigArt[name] = prepareSprite(tight)
-	}
-	return nil
-}
-
-type pose struct {
-	headX, headY, headAngle                float64
-	bodyY, bodyAngle                       float64
-	leftX, leftY, leftAngle                float64
-	rightX, rightY, rightAngle             float64
-	leftFootX, leftFootY, leftFootAngle    float64
-	rightFootX, rightFootY, rightFootAngle float64
-	armHeight, eyesOpen                    float64
-}
-
-func blendPose(a, b pose, t float64) pose {
-	mix := func(x, y float64) float64 { return x + (y-x)*t }
-	return pose{
-		headX: mix(a.headX, b.headX), headY: mix(a.headY, b.headY), headAngle: mix(a.headAngle, b.headAngle),
-		bodyY: mix(a.bodyY, b.bodyY), bodyAngle: mix(a.bodyAngle, b.bodyAngle),
-		leftX: mix(a.leftX, b.leftX), leftY: mix(a.leftY, b.leftY), leftAngle: mix(a.leftAngle, b.leftAngle),
-		rightX: mix(a.rightX, b.rightX), rightY: mix(a.rightY, b.rightY), rightAngle: mix(a.rightAngle, b.rightAngle),
-		leftFootX: mix(a.leftFootX, b.leftFootX), leftFootY: mix(a.leftFootY, b.leftFootY), leftFootAngle: mix(a.leftFootAngle, b.leftFootAngle),
-		rightFootX: mix(a.rightFootX, b.rightFootX), rightFootY: mix(a.rightFootY, b.rightFootY), rightFootAngle: mix(a.rightFootAngle, b.rightFootAngle),
-		armHeight: mix(a.armHeight, b.armHeight), eyesOpen: mix(a.eyesOpen, b.eyesOpen),
-	}
-}
-
-func (a *PetApp) currentPose() pose {
-	t, p := a.Time, a.ActionTime
-	breath := math.Sin(t * 1.85)
-	v := pose{
-		headX: 220 + a.LookX*3, headY: 238 + breath*1.1 + a.LookY*1.8, headAngle: a.LookX*.045 + math.Sin(t*.9)*.008,
-		bodyY: 351 + breath*.8, bodyAngle: math.Sin(t*.9) * .012,
-		leftX: 184, leftY: 348, leftAngle: -.15 - breath*.025,
-		rightX: 256, rightY: 348, rightAngle: .15 + breath*.025,
-		leftFootX: 189, leftFootY: 390, leftFootAngle: -.13,
-		rightFootX: 251, rightFootY: 390, rightFootAngle: .13,
-		armHeight: 66, eyesOpen: 1,
-	}
-	// Blink has closing/closed/opening phases, including an occasional double blink.
-	blink := math.Mod(t, 5.9)
-	if blink > 5.46 && blink < 5.70 {
-		v.eyesOpen = math.Min(1, math.Abs(blink-5.58)/.10)
-	}
-	if math.Mod(t, 17) > 16.7 {
-		v.eyesOpen = math.Min(v.eyesOpen, math.Abs(math.Mod(t, 17)-16.85)/.12)
-	}
-	strength := math.Min(1, p/.20)
+func (a *PetApp) characterPose() characterPose {
+	t, q := a.Time, a.ActionTime
+	p := characterPose{x: 220, y: 246, scale: 1}
+	p.y += math.Sin(t*1.65) * .65
 	switch a.Mode {
 	case "happy":
-		wave := math.Sin(p * 6)
-		v.headAngle += .095 * wave * math.Exp(-p*.6)
-		v.headY -= 4 * math.Sin(p*3) * math.Exp(-p*.5)
-		v.leftAngle -= .12 * wave
-		v.rightAngle += .12 * wave
-		v.leftFootY -= 3 * math.Max(0, wave)
-		v.rightFootY -= 3 * math.Max(0, -wave)
-		if p > .3 && p < 1.6 {
-			v.eyesOpen = .12
-		}
+		p.y -= 5 * math.Abs(math.Sin(q*4.4)) * math.Exp(-q*.6)
+		p.angle = .018 * math.Sin(q*4.4) * math.Exp(-q*.6)
 	case "waving":
-		strength *= math.Min(1, math.Max(0, (2.5-p)/.35))
-		v.rightX += 25 * strength
-		v.rightY -= 24 * strength
-		v.rightAngle += (.55 + .35*math.Sin(p*10)) * strength
-		v.headAngle -= .06 * strength
+		p.angle = .012 * math.Sin(q*5.4)
 	case "stretching":
-		strength = math.Sin(math.Min(1, p/3) * math.Pi)
-		v.leftX -= 16 * strength
-		v.rightX += 16 * strength
-		v.leftY -= 27 * strength
-		v.rightY -= 27 * strength
-		v.leftAngle -= .55 * strength
-		v.rightAngle += .55 * strength
-		v.headY -= 7 * strength
-		v.bodyY -= 4 * strength
-		v.eyesOpen = 1 - .9*strength
+		amount := math.Sin(math.Min(1, q/3) * math.Pi)
+		p.y -= 3 * amount
+		p.angle = -.018 * amount
 	case "walking":
-		stride := math.Sin(p * 7)
-		v.headY -= 2 * math.Abs(stride)
-		v.bodyY -= 2.4 * math.Abs(stride)
-		v.headAngle += .035 * stride
-		v.bodyAngle += .04 * stride
-		v.leftFootX += 8 * stride
-		v.rightFootX -= 8 * stride
-		v.leftFootY -= 8 * math.Max(0, stride)
-		v.rightFootY -= 8 * math.Max(0, -stride)
-		v.leftFootAngle += .22 * stride
-		v.rightFootAngle -= .22 * stride
-		v.leftY += 10
-		v.rightY += 10
-		v.armHeight = 58
-		v.leftAngle = .35*stride - .4
-		v.rightAngle = .35*stride + .4
+		step := math.Sin(q * 6.5)
+		p.y -= 2.5 * math.Abs(step)
+		p.angle = .012 * step
 	case "eating":
-		v.leftAngle = .65
-		v.rightAngle = -.65
-		v.armHeight = 53
-		v.leftX = 190
-		v.rightX = 250
-		v.leftY = 348
-		v.rightY = 348
-		v.headY += 2 * math.Abs(math.Sin(p*8))
-		v.headAngle = .025 * math.Sin(p*8)
+		p.y += .65 * math.Sin(q*7)
+		p.angle = .006 * math.Sin(q*7)
 	case "playing":
-		kick := math.Sin(p * 5)
-		v.rightX += 23
-		v.rightAngle = .6 + .45*kick
-		v.rightY += 6 * math.Max(0, kick)
-		v.headAngle += .06 * kick
-		v.headY -= 5 * math.Abs(kick)
-		v.rightFootAngle += .38 * math.Max(0, -kick)
+		p.y -= 3.5 * math.Abs(math.Sin(q*4.2))
+		p.angle = .015 * math.Sin(q*4.2)
 	case "sleeping":
-		v.eyesOpen = 0
-		v.headY = 250 + breath*1.8
-		v.headAngle = -.12
-		v.leftX = 194
-		v.rightX = 241
-		v.leftY = 350
-		v.rightY = 350
-		v.leftAngle = .45
-		v.rightAngle = -.25
-		v.armHeight = 55
+		p.y += 1 + math.Sin(t*1.3)*.9
 	case "dragging":
-		v.headAngle = .10 * math.Sin(t*6)
-		v.leftY = 355
-		v.rightY = 355
-		v.leftAngle = -2.8 + .2*math.Sin(t*5)
-		v.rightAngle = 2.8 + .2*math.Sin(t*5)
-		v.armHeight = 53
-		v.leftFootY += 8
-		v.rightFootY += 8
-		v.leftFootAngle -= .18
-		v.rightFootAngle += .18
+		p.angle = .025 * math.Sin(t*4)
+		p.y -= 3
 	}
-	return v
+	return p
+}
+
+func (a *PetApp) characterArt() *image.RGBA {
+	art, _ := petArt.(*image.RGBA)
+	blink := math.Mod(a.Time, 6.1)
+	closed := a.Sleeping() || (blink > 5.82 && blink < 5.97)
+	if a.Mode == "happy" && a.ActionTime > .35 && a.ActionTime < 1.05 {
+		closed = true
+	}
+	if closed && sleepArt != nil {
+		if asleep, ok := sleepArt.(*image.RGBA); ok {
+			return asleep
+		}
+	}
+	if a.Mode == "waving" && waveArt != nil && math.Sin(a.ActionTime*6) > .1 {
+		if wave, ok := waveArt.(*image.RGBA); ok {
+			return wave
+		}
+	}
+	return art
 }
 
 func (a *PetApp) Render() *image.RGBA {
-	if len(rigArt) != 4 {
-		return a.legacyRender()
-	}
 	out := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
-	p := a.currentPose()
+	p := a.characterPose()
 	if elapsed := a.Time - a.ModeChangedAt; a.PreviousMode != "" && elapsed < .24 {
 		previous := *a
 		previous.Mode, previous.ActionTime = a.PreviousMode, a.PreviousActionTime+elapsed
-		t := math.Max(0, elapsed/.24)
-		t = t * t * (3 - 2*t)
-		p = blendPose(previous.currentPose(), p, t)
+		from := previous.characterPose()
+		mix := math.Max(0, elapsed/.24)
+		mix = mix * mix * (3 - 2*mix)
+		p.x = from.x + (p.x-from.x)*mix
+		p.y = from.y + (p.y-from.y)*mix
+		p.angle = from.angle + (p.angle-from.angle)*mix
 	}
-	// The grounded shadow stays separate from the independently posed parts.
-	for i := 3; i > 0; i-- {
-		ellipse(out, 220, 414, float64(73+i*4), float64(5+i*2), color.RGBA{98, 67, 88, uint8(7 + i)})
+	art := a.characterArt()
+	if art != nil {
+		width := 360 * p.scale
+		height := width * float64(art.Rect.Dy()) / float64(art.Rect.Dx())
+		layer(out, art, p.x, p.y, width, height, p.angle, .5, .5, 1)
 	}
-	layer(out, rigArt["body"], 230, p.bodyY, 147, 105, p.bodyAngle, .5, .5, 1)
-	layer(out, rigArt["foot"], p.leftFootX, p.leftFootY, 59, 61, p.leftFootAngle, .5, .5, 1)
-	layer(out, rigArt["foot"], p.rightFootX, p.rightFootY, 59, 61, p.rightFootAngle, .5, .5, 1)
-	// Compose facial features in head space, then rotate the entire head.
-	head := a.faceLayer(p.eyesOpen)
-	headH := 262 * float64(head.Rect.Dy()) / float64(head.Rect.Dx())
-	layer(out, head, p.headX, p.headY, 262, headH, p.headAngle, .5, .5, 1)
-	layer(out, rigArt["paw"], p.leftX, p.leftY, 44, p.armHeight, p.leftAngle, .5, .92, 1)
-	layer(out, rigArt["paw"], p.rightX, p.rightY, 44, p.armHeight, p.rightAngle, .5, .92, 1)
 	if a.Mode == "eating" {
-		drawCookie(out, 220, 315+2*math.Sin(a.ActionTime*8), 15, a.ActionTime)
+		drawCookie(out, 204, 287+math.Sin(a.ActionTime*7), 10, a.ActionTime)
 	}
 	if a.Mode == "playing" {
 		q := a.ActionTime
-		x, y := 316+25*math.Sin(q*2.8), 391-36*math.Abs(math.Sin(q*5))
-		ellipse(out, x, 415, 17, 4, color.RGBA{100, 66, 93, 24})
-		circle(out, x, y, 17, color.RGBA{204, 147, 174, 255})
-		circle(out, x-1, y-2, 15, color.RGBA{251, 188, 209, 255})
-		line(out, x-13, y+2, x+12, y-3, 2, color.RGBA{255, 239, 245, 255})
-		line(out, x-4, y-14, x+4, y+14, 2, color.RGBA{255, 239, 245, 255})
-		circle(out, x-6, y-7, 3, color.RGBA{255, 255, 255, 210})
+		x, y := 343+20*math.Sin(q*2.8), 390-33*math.Abs(math.Sin(q*4.2))
+		ellipse(out, x, 413, 13, 3, color.RGBA{100, 66, 93, 18})
+		circle(out, x, y, 14, color.RGBA{205, 146, 173, 255})
+		circle(out, x-1, y-1, 12.5, color.RGBA{251, 193, 212, 255})
+		line(out, x-11, y+2, x+11, y-2, 1.7, color.RGBA{255, 241, 247, 255})
+		line(out, x-3, y-12, x+3, y+12, 1.7, color.RGBA{255, 241, 247, 255})
+		circle(out, x-5, y-6, 2.4, color.RGBA{255, 255, 255, 215})
 	}
 	if a.Sleeping() {
 		for i := 0; i < 3; i++ {
-			q := math.Mod(a.Time*.25+float64(i)/3, 1)
-			s := 5 + q*6
-			x, y := 304+q*29, 219-q*76
-			c := color.RGBA{166, 142, 177, uint8(190 * (1 - q))}
-			line(out, x, y, x+s, y, 2, c)
-			line(out, x+s, y, x, y+s, 2, c)
-			line(out, x, y+s, x+s, y+s, 2, c)
+			q := math.Mod(a.Time*.22+float64(i)/3, 1)
+			s := 4 + q*5
+			x, y := 378+q*12, 178-q*60
+			c := color.RGBA{176, 148, 174, uint8(170 * (1 - q))}
+			line(out, x, y, x+s, y, 1.7, c)
+			line(out, x+s, y, x, y+s, 1.7, c)
+			line(out, x, y+s, x+s, y+s, 1.7, c)
 		}
 	}
 	for _, v := range a.Particles {
-		alpha := uint8(math.Max(0, math.Min(1, 1-v.Age/v.Life)) * 210)
+		alpha := uint8(math.Max(0, math.Min(1, 1-v.Age/v.Life)) * 205)
 		x, y := v.X*canvasWidth, v.Y*canvasHeight
 		switch v.Kind {
 		case "heart":
-			heart(out, x, y, 5+2*math.Sin(v.Age*3), color.RGBA{242, 150, 178, alpha})
+			heart(out, x, y, 5+1.5*math.Sin(v.Age*3), color.RGBA{242, 150, 178, alpha})
 		case "star":
-			star(out, x, y, 6, color.RGBA{228, 183, 113, alpha})
+			star(out, x, y, 5, color.RGBA{228, 183, 113, alpha})
 		default:
-			circle(out, x, y, 2.1, color.RGBA{218, 168, 111, alpha})
+			circle(out, x, y, 1.7, color.RGBA{218, 168, 111, alpha})
 		}
 	}
 	if a.Bubble != "" && a.Time < a.BubbleUntil {
 		bubble := image.NewRGBA(out.Rect)
 		drawBubble(bubble, a.Bubble)
-		alpha := math.Min(1, math.Max(0, (a.BubbleUntil-a.Time)/.30))
+		alpha := math.Min(1, math.Max(0, (a.BubbleUntil-a.Time)/.3))
 		fadeComposite(out, bubble, alpha)
 	}
 	a.drawControls(out)
-	return out
-}
-
-func (a *PetApp) faceLayer(open float64) *image.RGBA {
-	head := rigArt["head"]
-	out := image.NewRGBA(head.Rect)
-	copy(out.Pix, head.Pix)
-	w, h := float64(out.Rect.Dx()), float64(out.Rect.Dy())
-	eyeY := h*.675 + a.LookY*3
-	for _, fx := range []float64{.325, .675} {
-		x := w*fx + a.LookX*6
-		if open < .22 {
-			// A soft curved eyelid, rather than a shrunken oval.
-			lastX, lastY := x-w*.022, eyeY
-			for i := 1; i <= 10; i++ {
-				q := float64(i) / 10
-				xx := x - w*.022 + q*w*.044
-				yy := eyeY + math.Sin(q*math.Pi)*h*.014
-				line(out, lastX, lastY, xx, yy, 3.4, petBrown)
-				lastX, lastY = xx, yy
-			}
-		} else {
-			ellipse(out, x, eyeY, w*.019, h*.032*open, petBrown)
-		}
-	}
-	nx, ny := w*.5+a.LookX*2, h*.752+a.LookY*1.8
-	ellipse(out, nx, ny, w*.031, h*.026, petBrown)
-	ellipse(out, nx, ny, w*.023, h*.0175, color.RGBA{255, 222, 129, 255})
 	return out
 }
 

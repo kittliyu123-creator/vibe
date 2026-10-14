@@ -586,7 +586,7 @@ func (h *winHost) menu() {
 	add(winMenuFeed, "喂一口零食", false)
 	add(winMenuPlay, "一起玩耍", false)
 	add(winMenuWave, "挥挥小手", false)
-	add(winMenuStretch, "伸个懒腰", false)
+	add(winMenuStretch, "歪歪头", false)
 	if h.app.Sleeping() {
 		add(winMenuSleep, "轻轻叫醒", false)
 	} else {

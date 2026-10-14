@@ -56,14 +56,24 @@ func previewFrames(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	for _, action := range []string{"hello", "pet", "wave", "stretch", "feed", "play", "sleep", "follow"} {
+	for _, action := range []string{"idle", "hello", "pet", "wave", "stretch", "feed", "play", "sleep", "follow"} {
 		app := newPetApp()
-		app.SetPointer(300, 250)
+		if action == "idle" {
+			app.Bubble = ""
+		} else {
+			app.SetPointer(300, 250)
+		}
 		if action == "follow" {
 			app.SetPointer(650, 250)
 		}
-		app.Action(action)
-		for i := 0; i < 18; i++ {
+		if action != "idle" {
+			app.Action(action)
+		}
+		steps := 18
+		if action == "wave" {
+			steps = 9
+		}
+		for i := 0; i < steps; i++ {
 			app.Tick(1.0 / 30)
 		}
 		f, err := os.Create(filepath.Join(dir, action+".png"))

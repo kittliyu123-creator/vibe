@@ -9,8 +9,8 @@ func TestArtworkAndWindowsAlpha(t *testing.T) {
 	if err := loadArtwork(); err != nil {
 		t.Fatal(err)
 	}
-	if petArt == nil || sleepArt == nil || len(rigArt) != 4 {
-		t.Fatal("all character layers must be embedded")
+	if petArt == nil || sleepArt == nil {
+		t.Fatal("complete reference and closed-eye artwork must be embedded")
 	}
 	for _, action := range []string{"hello", "pet", "wave", "stretch", "feed", "play", "sleep", "follow"} {
 		a := newPetApp()
